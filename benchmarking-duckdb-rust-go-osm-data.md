@@ -137,24 +137,37 @@ FROM p, hc;
 
 **Rust code - test 2:**
 ```rust
-use std::{time::Instant, ops::Div};
+use std::{time::Instant, ops::Div, collections::HashMap};
 use osmpbf::{ElementReader, Element};
-use rayon::prelude::*;
 use geo::HaversineDistance;
 use geo_types::Point;
 
-fn calculate_avg_distance(geom1: Vec<Point>, geom2: Vec<Point>) -> f64 {
+fn calculate_avg_distance(data: HashMap<&str, Point>) -> f64 {
+    
+    let mut health_centres:HashMap<&str, Point> = HashMap::new();
+    let mut pharmacies:HashMap<&str, Point> = HashMap::new();
+    let mut distances:HashMap<&str, f64> = HashMap::new();
 
-    let distances: Vec<f64> = geom1.iter()
-                                   .flat_map(|g1| {
-                                       geom2.iter()
-                                            .flat_map(move |g2| {
-                                                Some(g1.haversine_distance(g2))
-                                            })
-                                   }).collect();
+    for (key, value) in data.iter() {
+        if key.contains("health_care") {
+            health_centres.insert("health_care", *value);
+        } else if key.contains("pharmacy") {
+            pharmacies.insert("pharmacy", *value);
+        }
+    }
 
-    let sum: f64 = distances.iter().sum();
-    let count = distances.iter().len();
+    for (_, hc_val) in health_centres.iter() {
+        for (_, p_val) in pharmacies.iter() {
+            let distance = hc_val.haversine_distance(&p_val);
+            distances.insert("d", distance);
+        }
+    }
+
+    let mut sum = 0.0;
+    for (_, distance) in distances.iter() {
+        sum += distance
+    }
+    let count = distances.len();
 
     let average = sum / count as f64;
 
@@ -162,7 +175,7 @@ fn calculate_avg_distance(geom1: Vec<Point>, geom2: Vec<Point>) -> f64 {
 
 }
 
-fn open_osmpbf(area: &str) -> (Vec<Point>, Vec<Point>) {
+fn open_osmpbf(area: &str) -> HashMap<&str, Point> {
     
     let filepath = format!("../../data/{}-latest.osm.pbf", area);
     let reader = ElementReader::from_path(filepath).expect("Error opening file");
@@ -170,9 +183,8 @@ fn open_osmpbf(area: &str) -> (Vec<Point>, Vec<Point>) {
     let features = reader.par_map_reduce(
         |element| {
             let mut health_centre: Option<Point> = None; 
-            let mut health_centres: Vec<geo::Point> = vec![];
+            let mut data: HashMap<&str, geo::Point> = HashMap::new();
             let mut pharmacy: Option<Point> = None; 
-            let mut pharmacies: Vec<geo::Point> = vec![];
             let result:(Option<Point>, Option<Point>) = match element {
                 Element::Node(n) => {
                     for (key, value) in n.tags() {
@@ -200,26 +212,25 @@ fn open_osmpbf(area: &str) -> (Vec<Point>, Vec<Point>) {
 
             match (result.0, result.1) {
                 (Some(hc), Some(p)) => {
-                    health_centres.push(hc);
-                    pharmacies.push(p);
-                    (health_centres, pharmacies)
+                    data.insert("health_centre", hc);
+                    data.insert("pharmacy", p);
+                    data
                 },
                 (Some(hc), None) => {
-                    health_centres.push(hc);
-                    (health_centres, pharmacies)
+                    data.insert("health_centre", hc);
+                    data
                 },
                 (None, Some(p)) => {
-                    pharmacies.push(p);
-                    (health_centres, pharmacies)
+                    data.insert("pharmacy", p);
+                    data
                 }
-                (None, None) => (health_centres, pharmacies)
+                (None, None) => data
             }
         },
-        || (Vec::<geo::Point>::new(), Vec::<geo::Point>::new()),
+        || HashMap::<&str, geo::Point>::new(),
         |mut a, b| {
-            a.0.extend_from_slice(&b.0);
-            a.1.extend_from_slice(&b.1);
-            (a.0, a.1)
+            a.extend(&b);
+            a
         },
     ).expect("Error reading file");
 
@@ -231,12 +242,9 @@ fn open_osmpbf(area: &str) -> (Vec<Point>, Vec<Point>) {
 fn main() {
     let now = Instant::now();
     let area = "planet";
-    let hc_p = open_osmpbf(area);
-    println!("Health centres: {}", hc_p.0.len());
-    println!("Pharmacies: {}", hc_p.1.len());
-
-    let avg_distance = calculate_avg_distance(hc_p.0, hc_p.1);
-    println!("Average distance of Pharmacies to Health Centres: {} kilometers", avg_distance.div(1000.00).ceil());
+    let data = open_osmpbf(area);
+    let avg_distance = calculate_avg_distance(data);
+    println!("Average distance of Pharmacies to Health Centres in {}: {} kilometers", area, avg_distance.div(1000.00).ceil());
     println!("Time taken: {}", now.elapsed().as_secs_f32());
 }
 ```
@@ -257,7 +265,9 @@ import (
 	"fmt"
 	"sync"
 	"math"
+	//"runtime/debug"
 )
+
 
 func openOsmpbf(fname string) ([]orb.Point, []orb.Point) {
 
@@ -298,18 +308,32 @@ func openOsmpbf(fname string) ([]orb.Point, []orb.Point) {
 }
 
 func sum(arr []float64) float64 {
+	start := time.Now()
     sum := 0.0
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
     for _, valueInt := range arr {
-        sum += valueInt
+		wg.Add(1)
+		go func(valueInt float64) {
+			defer wg.Done()
+			mu.Lock()
+			sum += valueInt
+			mu.Unlock()
+		}(valueInt)
     }
+	fmt.Println(fmt.Sprintf("Time taken suming up: %f", time.Since(start).Seconds()))
     return sum
 }
 
 func calculateAvgDistance(g1 []orb.Point, g2 []orb.Point) float64 {
+	start := time.Now()
 
-	var distances []float64
+	//var distances []float64
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	var distance float64
+	var count int
 
 	for _, point_a := range g1 {
 		wg.Add(1)
@@ -317,7 +341,10 @@ func calculateAvgDistance(g1 []orb.Point, g2 []orb.Point) float64 {
 			defer wg.Done()
 			for _, point_b := range g2 {
 				mu.Lock()
-				distances = append(distances, geo.DistanceHaversine(point_a, point_b))
+				_ = point_b
+				//distances = append(distances, geo.DistanceHaversine(point_a, point_b))
+				distance += geo.DistanceHaversine(point_a, point_b) 
+				count += 1
 				mu.Unlock()
 			}
 		}(point_a)
@@ -325,22 +352,22 @@ func calculateAvgDistance(g1 []orb.Point, g2 []orb.Point) float64 {
 
 	wg.Wait()
 
-	result := sum(distances)
+	fmt.Println(fmt.Sprintf("Time taken calculating distance: %f", time.Since(start).Seconds()))
 
-	avg := (result) / (float64(len(distances)))
+	avg := distance / float64(count)
+
 
 	return avg
 
 }
 
 func main() {
+	//debug.SetMemoryLimit(8 * 1024 * 1024 * 1024)
 	start := time.Now()
-	hc, p := openOsmpbf("europe")
-    fmt.Println(fmt.Sprintf("Health centres: %d", len(hc)))
-    fmt.Println(fmt.Sprintf("Pharmacies: %d", len(p)))
+	area := "planet"
+	hc, p := openOsmpbf(area)
 	avgDistance := calculateAvgDistance(hc, p)
-    fmt.Println(fmt.Sprintf("Average distance of Pharmacies to Health Centres: %d kilometers", int64(math.RoundToEven(avgDistance)) / 1000))
-	elapsed := time.Since(start)
-	fmt.Println(fmt.Sprintf("Time taken: %f", elapsed.Seconds()))
+    fmt.Println(fmt.Sprintf("Average distance of Pharmacies to Health Centres in %s: %d kilometers", area, int64(math.RoundToEven(avgDistance)) / 1000))
+	fmt.Println(fmt.Sprintf("Time taken: %f", time.Since(start).Seconds()))
 }
 ```
