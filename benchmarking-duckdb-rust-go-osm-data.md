@@ -144,30 +144,15 @@ use geo_types::Point;
 
 fn calculate_avg_distance(data: HashMap<&str, Point>) -> f64 {
     
-    let mut health_centres:HashMap<&str, Point> = HashMap::new();
-    let mut pharmacies:HashMap<&str, Point> = HashMap::new();
-    let mut distances:HashMap<&str, f64> = HashMap::new();
-
-    for (key, value) in data.iter() {
-        if key.contains("health_care") {
-            health_centres.insert("health_care", *value);
-        } else if key.contains("pharmacy") {
-            pharmacies.insert("pharmacy", *value);
-        }
-    }
-
-    for (_, hc_val) in health_centres.iter() {
-        for (_, p_val) in pharmacies.iter() {
-            let distance = hc_val.haversine_distance(&p_val);
-            distances.insert("d", distance);
-        }
-    }
-
     let mut sum = 0.0;
-    for (_, distance) in distances.iter() {
-        sum += distance
+    let mut count = 1;
+
+    for hc in data.get("health_centre").iter() {
+        for p in data.get("pharmacy").iter() {
+            sum += hc.haversine_distance(&p);
+            count += 1;
+        }
     }
-    let count = distances.len();
 
     let average = sum / count as f64;
 
@@ -182,52 +167,36 @@ fn open_osmpbf(area: &str) -> HashMap<&str, Point> {
 
     let features = reader.par_map_reduce(
         |element| {
-            let mut health_centre: Option<Point> = None; 
-            let mut data: HashMap<&str, geo::Point> = HashMap::new();
-            let mut pharmacy: Option<Point> = None; 
-            let result:(Option<Point>, Option<Point>) = match element {
+            let mut point: HashMap<&str, Point> = HashMap::new(); 
+            let result:HashMap<&str, Point> = match element {
                 Element::Node(n) => {
                     for (key, value) in n.tags() {
                         if key == "healthcare" && value == "centre" {
-                            health_centre = Some(Point::new(n.lon(), n.lat()));
+                            point.insert("health_centre", Point::new(n.lon(), n.lat()));
                         } else if key == "amenity" && value == "pharmacy" {
-                            pharmacy = Some(Point::new(n.lon(), n.lat()));
+                            point.insert("pharmacy", Point::new(n.lon(), n.lat()));
                         }
                     }
-                    (health_centre, pharmacy)
+                    point
                 },
                 Element::DenseNode(dn) => {
                     for (key, value) in dn.tags() {
                         if key == "healthcare" && value == "centre" {
-                            health_centre = Some(Point::new(dn.lon(), dn.lat()));
+                            point.insert("health_centre", Point::new(dn.lon(), dn.lat()));
                         } else if key == "amenity" && value == "pharmacy" {
-                            pharmacy = Some(Point::new(dn.lon(), dn.lat()));
+                            point.insert("pharmacy", Point::new(dn.lon(), dn.lat()));
                         }
                     }
-                    (health_centre, pharmacy)
+                    point
                 },
-                Element::Relation(_) => (None, None),
-                Element::Way(_) => (None, None),
+                Element::Relation(_) => HashMap::new(),
+                Element::Way(_) => HashMap::new(),
             };
 
-            match (result.0, result.1) {
-                (Some(hc), Some(p)) => {
-                    data.insert("health_centre", hc);
-                    data.insert("pharmacy", p);
-                    data
-                },
-                (Some(hc), None) => {
-                    data.insert("health_centre", hc);
-                    data
-                },
-                (None, Some(p)) => {
-                    data.insert("pharmacy", p);
-                    data
-                }
-                (None, None) => data
-            }
+            result
+
         },
-        || HashMap::<&str, geo::Point>::new(),
+        || HashMap::<&str, Point>::new(),
         |mut a, b| {
             a.extend(&b);
             a
